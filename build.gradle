@@ -1,0 +1,174 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * opensearch-monitoring-exporter
+ *
+ * Plugin OpenSearch che esporta le metriche del cluster verso un cluster
+ * di monitoring dedicato via Bulk API HTTP.
+ *
+ * Usa esclusivamente:
+ *  - API interne di OpenSearch per la raccolta metriche
+ *  - java.net.http.HttpClient (JDK 11+) per l'invio HTTP
+ * Zero dipendenze esterne — nessun jar aggiuntivo nel plugin zip.
+ */
+
+import org.opensearch.gradle.test.RestIntegTestTask
+
+buildscript {
+    ext {
+        opensearch_version = System.getProperty('opensearch.version', '3.7.0')
+    }
+    repositories {
+        mavenLocal()
+        maven { url 'https://ci.opensearch.org/ci/dbc/snapshots/maven/' }
+        mavenCentral()
+        maven { url 'https://plugins.gradle.org/m2/' }
+    }
+    dependencies {
+        classpath "org.opensearch.gradle:build-tools:${opensearch_version}"
+    }
+}
+
+apply plugin: 'java'
+apply plugin: 'idea'
+apply plugin: 'opensearch.opensearchplugin'
+apply plugin: 'opensearch.yaml-rest-test'
+apply plugin: 'opensearch.pluginzip'
+
+def pluginName        = 'opensearch-monitoring-exporter'
+def pluginDescription = 'Exports OpenSearch node/cluster metrics directly to a dedicated monitoring cluster in ss4o format, using only internal OpenSearch APIs and JDK HTTP client.'
+def packagePath       = 'it.seacom.opensearch'
+def pathToPlugin      = 'monitoring.plugin'
+def pluginClassName   = 'MonitoringExporterPlugin'
+
+group = 'it.seacom.opensearch'
+
+java {
+    targetCompatibility = JavaVersion.VERSION_21
+    sourceCompatibility = JavaVersion.VERSION_21
+}
+
+opensearchplugin {
+    name pluginName
+    description pluginDescription
+    classname "${packagePath}.${pathToPlugin}.${pluginClassName}"
+    licenseFile rootProject.file('LICENSE.txt')
+    noticeFile  rootProject.file('NOTICE.txt')
+}
+
+repositories {
+    mavenLocal()
+    maven { url 'https://ci.opensearch.org/ci/dbc/snapshots/maven/' }
+    mavenCentral()
+    maven { url 'https://plugins.gradle.org/m2/' }
+}
+
+// Nessuna dipendenza implementation — tutto è provided da OpenSearch o dalla JDK
+dependencies {
+}
+// Java agent richiesto da OpenSearch 3.x per inizializzare il framework di test.
+// Replica il comportamento del plugin interno opensearch.javaagent.
+configurations {
+    agent
+}
+
+dependencies {
+    agent "org.opensearch:opensearch-agent-bootstrap:${opensearch_version}"
+    agent "org.opensearch:opensearch-agent:${opensearch_version}"
+}
+
+tasks.register('prepareJavaAgent', Copy) {
+    from configurations.agent
+    into layout.buildDirectory.dir('agent')
+}
+
+tasks.withType(Test).configureEach { testTask ->
+    testTask.dependsOn('prepareJavaAgent')
+    testTask.doFirst {
+        def agentJar = layout.buildDirectory.file("agent/opensearch-agent-${opensearch_version}.jar").get().asFile
+        if (agentJar.exists()) {
+            testTask.jvmArgs("-javaagent:${agentJar.absolutePath}")
+        }
+    }
+}
+
+// Risolve conflitti di versione nelle dipendenze transitive dei test
+configurations.all {
+    resolutionStrategy.eachDependency { DependencyResolveDetails details ->
+        if (details.requested.group == 'com.google.errorprone') {
+            details.useVersion '2.38.0'
+            details.because 'Align with OpenSearch 3.6 transitive dependency'
+        }
+    }
+}
+
+publishing {
+    publications {
+        pluginZip(MavenPublication) { publication ->
+            pom {
+                name = pluginName
+                description = pluginDescription
+                licenses {
+                    license {
+                        name = 'The Apache License, Version 2.0'
+                        url  = 'http://www.apache.org/licenses/LICENSE-2.0.txt'
+                    }
+                }
+                developers {
+                    developer {
+                        name = 'Seacom Srl'
+                        url  = 'https://github.com/opensearch-project/opensearch-monitoring-exporter'
+                    }
+                }
+            }
+        }
+    }
+}
+
+loggerUsageCheck.enabled  = false
+validateNebulaPom.enabled = false
+
+javadoc {
+    options.addStringOption('Xdoclint:none', '-quiet')
+    options.addStringOption('Xdoclint:-missing', '-quiet')
+}
+
+test {
+    include '**/*Tests.class'
+}
+
+task integTest(type: RestIntegTestTask) {
+    description = 'Run tests against a cluster'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath       = sourceSets.test.runtimeClasspath
+}
+tasks.named('check').configure { dependsOn(integTest) }
+
+integTest {
+    if (System.getProperty('test.debug') != null) {
+        jvmArgs '-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=*:5005'
+    }
+}
+
+testClusters.integTest {
+    testDistribution = 'INTEG_TEST'
+    plugin(project.tasks.bundlePlugin.archiveFile)
+}
+
+run {
+    useCluster testClusters.integTest
+}
+
+task updateVersion {
+    onlyIf { System.getProperty('newVersion') }
+    doLast {
+        ext.newVersion = System.getProperty('newVersion')
+        println "Setting version to ${newVersion}."
+        ant.replaceregexp(
+            file: 'build.gradle',
+            match: '"opensearch.version", "\\d.*"',
+            replace: '"opensearch.version", "' + newVersion.tokenize('-')[0] + '-SNAPSHOT"',
+            flags: 'g', byline: true
+        )
+    }
+}

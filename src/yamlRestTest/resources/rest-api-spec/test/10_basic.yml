@@ -1,0 +1,9 @@
+---
+"Test che il plugin è caricato in OpenSearch":
+  - do:
+      cat.plugins:
+        local: true
+        h: component
+
+  - match:
+      $body: /opensearch-monitoring-exporter/

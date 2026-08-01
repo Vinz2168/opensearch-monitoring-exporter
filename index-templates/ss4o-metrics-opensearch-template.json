@@ -1,0 +1,115 @@
+{
+  "index_patterns": ["ss4o_metrics-opensearch-*"],
+  "template": {
+    "settings": {
+      "number_of_shards": 1,
+      "number_of_replicas": 1,
+      "index.mapping.total_fields.limit": 2000
+    },
+    "mappings": {
+      "dynamic": "true",
+      "date_detection": false,
+      "numeric_detection": false,
+
+      "properties": {
+        "@timestamp": { "type": "date" },
+        "kind":       { "type": "keyword" },
+        "cluster":    { "type": "keyword" },
+
+        "node": {
+          "properties": {
+            "name": { "type": "keyword" },
+            "id":   { "type": "keyword" }
+          }
+        },
+
+        "index": { "type": "keyword" },
+
+        "cluster_status":      { "type": "integer" },
+        "cluster_status_name": { "type": "keyword" },
+        "status":               { "type": "integer" },
+        "status_name":          { "type": "keyword" },
+        "timed_out":            { "type": "integer" },
+
+        "disk_watermark_low":         { "type": "keyword" },
+        "disk_watermark_high":        { "type": "keyword" },
+        "disk_watermark_flood_stage": { "type": "keyword" },
+        "routing_allocation_enable":  { "type": "keyword" }
+      },
+
+      "dynamic_templates": [
+        {
+          "bytes_as_long": {
+            "match": "*_bytes",
+            "mapping": { "type": "long" }
+          }
+        },
+        {
+          "ms_as_long": {
+            "match": "*_ms",
+            "mapping": { "type": "long" }
+          }
+        },
+        {
+          "count_as_long": {
+            "match": "*_count",
+            "mapping": { "type": "long" }
+          }
+        },
+        {
+          "total_as_long": {
+            "match": "*_total",
+            "mapping": { "type": "long" }
+          }
+        },
+        {
+          "percent_as_double": {
+            "match": "*_percent",
+            "mapping": { "type": "double" }
+          }
+        },
+        {
+          "load_avg_as_double": {
+            "match": "load_avg_*",
+            "mapping": { "type": "double" }
+          }
+        },
+        {
+          "thread_pool_longs": {
+            "path_match": "pools.*.*",
+            "mapping": { "type": "long" }
+          }
+        },
+        {
+          "gc_collector_counts": {
+            "path_match": "gc.*.collection_count",
+            "mapping": { "type": "long" }
+          }
+        },
+        {
+          "gc_collector_time": {
+            "path_match": "gc.*.collection_time_ms",
+            "mapping": { "type": "long" }
+          }
+        },
+        {
+          "attributes_as_keyword": {
+            "match": "attributes@*",
+            "mapping": { "type": "keyword" }
+          }
+        },
+        {
+          "strings_as_keyword": {
+            "match_mapping_type": "string",
+            "mapping": { "type": "keyword" }
+          }
+        }
+      ]
+    }
+  },
+  "priority": 200,
+  "_meta": {
+    "description": "Index template for opensearch-monitoring-exporter ss4o metric documents",
+    "plugin": "opensearch-monitoring-exporter"
+  }
+}

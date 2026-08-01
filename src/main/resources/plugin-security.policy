@@ -1,0 +1,12 @@
+grant {
+    // Necessario per aprire connessioni TCP verso il cluster di monitoring
+    permission java.net.SocketPermission "*", "connect,resolve";
+
+    // Necessario per leggere le impostazioni TLS dal keystore/truststore
+    permission java.io.FilePermission "<<ALL FILES>>", "read";
+
+    // Reflection usata internamente da HttpClient (Apache)
+    permission java.lang.reflect.ReflectPermission "suppressAccessChecks";
+    permission java.lang.RuntimePermission "accessDeclaredMembers";
+    permission java.lang.RuntimePermission "setContextClassLoader";
+};
