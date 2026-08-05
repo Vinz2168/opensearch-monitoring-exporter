@@ -13,6 +13,7 @@ import it.seacom.opensearch.monitoring.queue.MetricsDocumentQueue;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.common.settings.Settings;
+import org.opensearch.common.util.concurrent.FutureUtils;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -223,7 +224,7 @@ public class BulkFlushWorker implements AutoCloseable {
         }
         this.flushIntervalSeconds = seconds;
         if (flushTask != null) {
-            flushTask.cancel(false);
+            FutureUtils.cancel(flushTask);
         }
         flushTask = scheduler.scheduleWithFixedDelay(this::flush, seconds, seconds, TimeUnit.SECONDS);
         log.info("[monitoring-exporter] BulkFlushWorker: intervallo di flush aggiornato a {}s", seconds);

@@ -23,6 +23,7 @@ import org.opensearch.action.admin.indices.stats.IndicesStatsRequest;
 import org.opensearch.action.admin.indices.stats.IndicesStatsResponse;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.settings.Settings;
+import org.opensearch.common.util.concurrent.FutureUtils;
 import org.opensearch.core.action.ActionListener;
 import org.opensearch.transport.client.Client;
 import org.opensearch.transport.client.Requests;
@@ -228,7 +229,7 @@ public class StatsCollector implements AutoCloseable {
         }
         this.collectIntervalSeconds = seconds;
         if (collectTask != null) {
-            collectTask.cancel(false);
+            FutureUtils.cancel(collectTask);
         }
         collectTask = scheduler.scheduleWithFixedDelay(this::collect, seconds, seconds, TimeUnit.SECONDS);
         log.info("[monitoring-exporter] StatsCollector: intervallo di raccolta aggiornato a {}s", seconds);
