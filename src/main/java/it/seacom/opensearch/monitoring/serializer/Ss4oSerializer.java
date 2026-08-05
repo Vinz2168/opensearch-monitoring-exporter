@@ -39,12 +39,17 @@ public class Ss4oSerializer {
     private static final DateTimeFormatter IDX_FMT =
         DateTimeFormatter.ofPattern("yyyy.MM.dd", Locale.ROOT).withZone(ZoneOffset.UTC);
 
-    private final String indexPattern;
+    private volatile String indexPattern;
     private final String clusterName;
 
     public Ss4oSerializer(Settings settings) {
         this.indexPattern = MonitoringExporterSettings.TARGET_INDEX.get(settings);
         this.clusterName  = settings.get("cluster.name", "unknown");
+    }
+
+    /** Consente di aggiornare il pattern indice a runtime (settaggio dinamico). */
+    public void setIndexPattern(String indexPattern) {
+        this.indexPattern = indexPattern;
     }
 
     public List<MetricDocument> serialize(

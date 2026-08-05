@@ -31,6 +31,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -45,11 +46,16 @@ public class StatsCollector implements AutoCloseable {
     private final MetricsDocumentQueue queue;
     private final Ss4oSerializer serializer;
 
-    private final boolean collectIndices;
-    private final boolean collectClusterSettings;
-    private final String nodesFilter;
+    // Non final: aggiornabili a runtime via ClusterSettings.addSettingsUpdateConsumer
+    // (vedi MonitoringExporterPlugin), cosi' i Property.Dynamic dichiarati in
+    // MonitoringExporterSettings hanno effetto reale senza restart del nodo.
+    private volatile boolean collectIndices;
+    private volatile boolean collectClusterSettings;
+    private volatile String nodesFilter;
+    private volatile int collectIntervalSeconds;
 
     private final ScheduledExecutorService scheduler;
+    private volatile ScheduledFuture<?> collectTask;
     private final AtomicBoolean closed = new AtomicBoolean(false);
 
     // Contatore atomico per tracciare la backpressure (documenti rifiutati a causa della coda piena)
@@ -76,9 +82,10 @@ public class StatsCollector implements AutoCloseable {
     }
 
     public void start() {
-        int interval = MonitoringExporterSettings.COLLECT_INTERVAL_SECONDS.get(settings);
-        scheduler.scheduleWithFixedDelay(this::collect, interval, interval, TimeUnit.SECONDS);
-        log.info("[monitoring-exporter] StatsCollector avviato: raccolta ogni {}s", interval);
+        this.collectIntervalSeconds = MonitoringExporterSettings.COLLECT_INTERVAL_SECONDS.get(settings);
+        this.collectTask = scheduler.scheduleWithFixedDelay(
+            this::collect, collectIntervalSeconds, collectIntervalSeconds, TimeUnit.SECONDS);
+        log.info("[monitoring-exporter] StatsCollector avviato: raccolta ogni {}s", collectIntervalSeconds);
     }
 
     private void collect() {
@@ -190,6 +197,41 @@ public class StatsCollector implements AutoCloseable {
     /** Esposto per telemetria/health check. */
     public long getDroppedDocumentsCount() {
         return droppedDocumentsCounter.get();
+    }
+
+    // -------------------------------------------------------------------------
+    // Setter per settaggi dinamici (Property.Dynamic) — chiamati dai consumer
+    // registrati in MonitoringExporterPlugin quando l'operatore cambia il
+    // valore via PUT _cluster/settings, senza richiedere un restart del nodo.
+    // -------------------------------------------------------------------------
+
+    public void setCollectIndices(boolean collectIndices) {
+        this.collectIndices = collectIndices;
+    }
+
+    public void setCollectClusterSettings(boolean collectClusterSettings) {
+        this.collectClusterSettings = collectClusterSettings;
+    }
+
+    public void setNodesFilter(String nodesFilter) {
+        this.nodesFilter = nodesFilter;
+    }
+
+    public void setTargetIndexPattern(String indexPattern) {
+        this.serializer.setIndexPattern(indexPattern);
+    }
+
+    public synchronized void setCollectIntervalSeconds(int seconds) {
+        if (seconds == this.collectIntervalSeconds || closed.get()) {
+            this.collectIntervalSeconds = seconds;
+            return;
+        }
+        this.collectIntervalSeconds = seconds;
+        if (collectTask != null) {
+            collectTask.cancel(false);
+        }
+        collectTask = scheduler.scheduleWithFixedDelay(this::collect, seconds, seconds, TimeUnit.SECONDS);
+        log.info("[monitoring-exporter] StatsCollector: intervallo di raccolta aggiornato a {}s", seconds);
     }
 
     @Override

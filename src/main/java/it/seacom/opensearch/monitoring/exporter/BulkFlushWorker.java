@@ -25,6 +25,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -38,12 +39,17 @@ public class BulkFlushWorker implements AutoCloseable {
     private static final Logger log = LogManager.getLogger(BulkFlushWorker.class);
 
     private final MetricsDocumentQueue queue;
-    private final HttpClient httpClient;
-    private final String bulkEndpoint;
-    private final String authHeader;
-    private final int batchSize;
-    private final int maxRetries;
+    // Non final: aggiornabili a runtime via ClusterSettings.addSettingsUpdateConsumer
+    // (vedi MonitoringExporterPlugin), cosi' i Property.Dynamic dichiarati in
+    // MonitoringExporterSettings hanno effetto reale senza restart del nodo.
+    private volatile HttpClient httpClient;
+    private volatile String bulkEndpoint;
+    private volatile String authHeader;
+    private volatile int batchSize;
+    private volatile int maxRetries;
+    private volatile int flushIntervalSeconds;
     private final ScheduledExecutorService scheduler;
+    private volatile ScheduledFuture<?> flushTask;
     private final AtomicBoolean closed = new AtomicBoolean(false);
 
     public BulkFlushWorker(Settings settings,
@@ -57,7 +63,7 @@ public class BulkFlushWorker implements AutoCloseable {
         this.authHeader   = authHeader;
         this.batchSize    = MonitoringExporterSettings.BATCH_SIZE.get(settings);
         this.maxRetries   = MonitoringExporterSettings.MAX_RETRIES.get(settings);
-        int interval      = MonitoringExporterSettings.FLUSH_INTERVAL_SECONDS.get(settings);
+        this.flushIntervalSeconds = MonitoringExporterSettings.FLUSH_INTERVAL_SECONDS.get(settings);
 
         this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "monitoring-exporter-flush");
@@ -65,9 +71,10 @@ public class BulkFlushWorker implements AutoCloseable {
             return t;
         });
 
-        scheduler.scheduleWithFixedDelay(this::flush, interval, interval, TimeUnit.SECONDS);
+        this.flushTask = scheduler.scheduleWithFixedDelay(
+            this::flush, flushIntervalSeconds, flushIntervalSeconds, TimeUnit.SECONDS);
         log.info("[monitoring-exporter] BulkFlushWorker avviato: flush ogni {}s, batchSize={}",
-                 interval, batchSize);
+                 flushIntervalSeconds, batchSize);
     }
 
     public void flush() {
@@ -193,6 +200,46 @@ public class BulkFlushWorker implements AutoCloseable {
                           + "{} doc persi: {}", maxRetries, docCount, e.getMessage(), e);
             }
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // Setter per settaggi dinamici (Property.Dynamic) — chiamati dai consumer
+    // registrati in MonitoringExporterPlugin quando l'operatore cambia il
+    // valore via PUT _cluster/settings, senza richiedere un restart del nodo.
+    // -------------------------------------------------------------------------
+
+    public void setBatchSize(int batchSize) {
+        this.batchSize = batchSize;
+    }
+
+    public void setMaxRetries(int maxRetries) {
+        this.maxRetries = maxRetries;
+    }
+
+    public synchronized void setFlushIntervalSeconds(int seconds) {
+        if (seconds == this.flushIntervalSeconds || closed.get()) {
+            this.flushIntervalSeconds = seconds;
+            return;
+        }
+        this.flushIntervalSeconds = seconds;
+        if (flushTask != null) {
+            flushTask.cancel(false);
+        }
+        flushTask = scheduler.scheduleWithFixedDelay(this::flush, seconds, seconds, TimeUnit.SECONDS);
+        log.info("[monitoring-exporter] BulkFlushWorker: intervallo di flush aggiornato a {}s", seconds);
+    }
+
+    /**
+     * Sostituisce atomicamente client HTTP, endpoint bulk e header di
+     * autenticazione — usato quando cambiano target.hosts, target.username o
+     * i settaggi TLS, che richiedono di ricostruire l'HttpClient (SSLContext
+     * diverso) e/o l'header Authorization.
+     */
+    public synchronized void reconfigureEndpoint(HttpClient httpClient, String bulkEndpoint, String authHeader) {
+        this.httpClient   = httpClient;
+        this.bulkEndpoint = bulkEndpoint;
+        this.authHeader   = authHeader;
+        log.info("[monitoring-exporter] BulkFlushWorker: endpoint aggiornato -> {}", bulkEndpoint);
     }
 
     @Override
