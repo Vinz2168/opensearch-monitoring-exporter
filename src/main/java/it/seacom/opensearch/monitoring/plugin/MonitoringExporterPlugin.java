@@ -61,6 +61,7 @@ public class MonitoringExporterPlugin extends Plugin {
     private StatsCollector statsCollector;
     private BulkFlushWorker flushWorker;
     private HttpClient httpClient;
+    private ClusterService clusterService;
 
     public MonitoringExporterPlugin(Settings settings) {
         this.settings = settings;
@@ -79,6 +80,8 @@ public class MonitoringExporterPlugin extends Plugin {
             NamedWriteableRegistry namedWriteableRegistry,
             IndexNameExpressionResolver indexNameExpressionResolver,
             Supplier<RepositoriesService> repositoriesServiceSupplier) {
+
+        this.clusterService = clusterService;
 
         try {
             List<String> hosts = MonitoringExporterSettings.TARGET_HOSTS.get(settings);
@@ -109,12 +112,92 @@ public class MonitoringExporterPlugin extends Plugin {
             this.statsCollector = new StatsCollector(settings, client, clusterService, queue);
             this.statsCollector.start();
 
+            registerDynamicSettingsConsumers(clusterService, environment);
+
             log.info("[monitoring-exporter] Plugin avviato. endpoints={}", bulkEndpoints);
         } catch (Exception e) {
             log.error("[monitoring-exporter] Avvio fallito: {}", e.getMessage(), e);
         }
 
         return List.of();
+    }
+
+    // -------------------------------------------------------------------------
+    // Settaggi dinamici (Property.Dynamic) — senza questi consumer, un
+    // PUT _cluster/settings viene accettato (acknowledged: true) ma non ha
+    // alcun effetto: i valori venivano letti una sola volta, allo startup.
+    // -------------------------------------------------------------------------
+
+    private void registerDynamicSettingsConsumers(ClusterService clusterService, Environment environment) {
+        var clusterSettings = clusterService.getClusterSettings();
+
+        // Settaggi che il BulkFlushWorker puo' applicare da solo, senza toccare
+        // l'HttpClient/endpoint.
+        clusterSettings.addSettingsUpdateConsumer(
+            MonitoringExporterSettings.BATCH_SIZE, flushWorker::setBatchSize);
+        clusterSettings.addSettingsUpdateConsumer(
+            MonitoringExporterSettings.MAX_RETRIES, flushWorker::setMaxRetries);
+        clusterSettings.addSettingsUpdateConsumer(
+            MonitoringExporterSettings.FLUSH_INTERVAL_SECONDS, flushWorker::setFlushIntervalSeconds);
+
+        // Settaggi che lo StatsCollector puo' applicare da solo.
+        clusterSettings.addSettingsUpdateConsumer(
+            MonitoringExporterSettings.COLLECT_INTERVAL_SECONDS, statsCollector::setCollectIntervalSeconds);
+        clusterSettings.addSettingsUpdateConsumer(
+            MonitoringExporterSettings.COLLECT_INDICES, statsCollector::setCollectIndices);
+        clusterSettings.addSettingsUpdateConsumer(
+            MonitoringExporterSettings.COLLECT_CLUSTER_SETTINGS, statsCollector::setCollectClusterSettings);
+        clusterSettings.addSettingsUpdateConsumer(
+            MonitoringExporterSettings.NODES_FILTER, statsCollector::setNodesFilter);
+        clusterSettings.addSettingsUpdateConsumer(
+            MonitoringExporterSettings.TARGET_INDEX, statsCollector::setTargetIndexPattern);
+
+        // Settaggi che richiedono di ricostruire HttpClient/endpoint/header
+        // insieme (target.hosts, target.username, TLS) -- il nuovo valore del
+        // singolo setting viene ignorato qui: rebuildHttpConfig rilegge lo
+        // stato corrente di tutti e quattro da ClusterSettings, cosi' restano
+        // sempre coerenti tra loro anche se cambiano in chiamate separate.
+        clusterSettings.addSettingsUpdateConsumer(
+            MonitoringExporterSettings.TARGET_HOSTS, v -> rebuildHttpConfig(environment));
+        clusterSettings.addSettingsUpdateConsumer(
+            MonitoringExporterSettings.TARGET_USERNAME, v -> rebuildHttpConfig(environment));
+        clusterSettings.addSettingsUpdateConsumer(
+            MonitoringExporterSettings.TLS_VERIFY_HOSTNAME, v -> rebuildHttpConfig(environment));
+        clusterSettings.addSettingsUpdateConsumer(
+            MonitoringExporterSettings.TLS_TRUSTSTORE_PATH, v -> rebuildHttpConfig(environment));
+    }
+
+    private synchronized void rebuildHttpConfig(Environment environment) {
+        try {
+            var clusterSettings = clusterService.getClusterSettings();
+            List<String> hosts = clusterSettings.get(MonitoringExporterSettings.TARGET_HOSTS);
+            String username = clusterSettings.get(MonitoringExporterSettings.TARGET_USERNAME);
+
+            HttpClient newClient = buildHttpClient(environment);
+            String bulkEndpoints = hosts.stream()
+                .map(h -> h + "/_bulk")
+                .collect(Collectors.joining(","));
+
+            final String password;
+            try (SecureString pwd = MonitoringExporterSettings.TARGET_PASSWORD.get(settings)) {
+                password = pwd != null ? pwd.toString() : "";
+            }
+            String authHeader = "Basic " + Base64.getEncoder().encodeToString(
+                (username + ":" + password).getBytes(StandardCharsets.UTF_8));
+
+            HttpClient oldClient = this.httpClient;
+            this.httpClient = newClient;
+            flushWorker.reconfigureEndpoint(newClient, bulkEndpoints, authHeader);
+            if (oldClient != null) {
+                try { oldClient.close(); } catch (Exception ignored) { /* best effort */ }
+            }
+
+            log.info("[monitoring-exporter] Configurazione HTTP ricaricata dinamicamente. endpoints={}",
+                      bulkEndpoints);
+        } catch (Exception e) {
+            log.error("[monitoring-exporter] Impossibile ricaricare la configurazione HTTP: {}",
+                       e.getMessage(), e);
+        }
     }
 
     @Override
@@ -144,10 +227,20 @@ public class MonitoringExporterPlugin extends Plugin {
     }
 
     private SSLContext buildSslContext(Environment environment) throws Exception {
-        boolean verify = MonitoringExporterSettings.TLS_VERIFY_HOSTNAME.get(settings);
+        // Legge da ClusterSettings, non dall'oggetto Settings immutabile fissato
+        // all'avvio del nodo: TLS_VERIFY_HOSTNAME e TLS_TRUSTSTORE_PATH sono
+        // Property.Dynamic, quindi il valore corrente (post PUT _cluster/settings)
+        // vive li', non in `settings`. Al primo avvio (clusterService == null,
+        // chiamata da createComponents prima che il campo sia assegnato) i due
+        // insiemi coincidono comunque con i valori iniziali.
+        boolean verify = clusterService != null
+            ? clusterService.getClusterSettings().get(MonitoringExporterSettings.TLS_VERIFY_HOSTNAME)
+            : MonitoringExporterSettings.TLS_VERIFY_HOSTNAME.get(settings);
         if (!verify) return buildTrustAllContext();
 
-        String truststorePath = MonitoringExporterSettings.TLS_TRUSTSTORE_PATH.get(settings);
+        String truststorePath = clusterService != null
+            ? clusterService.getClusterSettings().get(MonitoringExporterSettings.TLS_TRUSTSTORE_PATH)
+            : MonitoringExporterSettings.TLS_TRUSTSTORE_PATH.get(settings);
         if (truststorePath == null || truststorePath.isBlank()) {
             return SSLContext.getDefault();
         }
