@@ -165,6 +165,8 @@ public class MonitoringExporterPlugin extends Plugin {
             MonitoringExporterSettings.TLS_VERIFY_HOSTNAME, v -> rebuildHttpConfig(environment));
         clusterSettings.addSettingsUpdateConsumer(
             MonitoringExporterSettings.TLS_TRUSTSTORE_PATH, v -> rebuildHttpConfig(environment));
+        clusterSettings.addSettingsUpdateConsumer(
+            MonitoringExporterSettings.TLS_KEYSTORE_PATH, v -> rebuildHttpConfig(environment));
     }
 
     private synchronized void rebuildHttpConfig(Environment environment) {
@@ -228,21 +230,32 @@ public class MonitoringExporterPlugin extends Plugin {
 
     private SSLContext buildSslContext(Environment environment) throws Exception {
         // Legge da ClusterSettings, non dall'oggetto Settings immutabile fissato
-        // all'avvio del nodo: TLS_VERIFY_HOSTNAME e TLS_TRUSTSTORE_PATH sono
-        // Property.Dynamic, quindi il valore corrente (post PUT _cluster/settings)
-        // vive li', non in `settings`. Al primo avvio (clusterService == null,
-        // chiamata da createComponents prima che il campo sia assegnato) i due
-        // insiemi coincidono comunque con i valori iniziali.
+        // all'avvio del nodo: TLS_VERIFY_HOSTNAME, TLS_TRUSTSTORE_PATH e
+        // TLS_KEYSTORE_PATH sono Property.Dynamic, quindi il valore corrente
+        // (post PUT _cluster/settings) vive li', non in `settings`. Al primo
+        // avvio (clusterService == null, chiamata da createComponents prima
+        // che il campo sia assegnato) i due insiemi coincidono comunque con i
+        // valori iniziali.
+        KeyManager[] keyManagers = buildKeyManagers(environment);
+
         boolean verify = clusterService != null
             ? clusterService.getClusterSettings().get(MonitoringExporterSettings.TLS_VERIFY_HOSTNAME)
             : MonitoringExporterSettings.TLS_VERIFY_HOSTNAME.get(settings);
-        if (!verify) return buildTrustAllContext();
+        if (!verify) return buildTrustAllContext(keyManagers);
 
         String truststorePath = clusterService != null
             ? clusterService.getClusterSettings().get(MonitoringExporterSettings.TLS_TRUSTSTORE_PATH)
             : MonitoringExporterSettings.TLS_TRUSTSTORE_PATH.get(settings);
         if (truststorePath == null || truststorePath.isBlank()) {
-            return SSLContext.getDefault();
+            if (keyManagers == null) {
+                return SSLContext.getDefault();
+            }
+            // Nessun truststore custom, ma serve comunque il certificato client:
+            // trustManagers=null fa usare alla JDK gli stessi TrustManager
+            // impliciti di SSLContext.getDefault(), con in piu' i nostri keyManagers.
+            SSLContext ctx = SSLContext.getInstance("TLS");
+            ctx.init(keyManagers, null, new SecureRandom());
+            return ctx;
         }
 
         KeyStore ts = KeyStore.getInstance("JKS");
@@ -256,13 +269,42 @@ public class MonitoringExporterPlugin extends Plugin {
         tmf.init(ts);
 
         SSLContext ctx = SSLContext.getInstance("TLS");
-        ctx.init(null, tmf.getTrustManagers(), new SecureRandom());
+        ctx.init(keyManagers, tmf.getTrustManagers(), new SecureRandom());
         return ctx;
     }
 
-    private SSLContext buildTrustAllContext() throws Exception {
+    /**
+     * Carica il keystore client (mutual TLS) se {@code tls.keystore.path} e'
+     * configurato. Restituisce {@code null} se non configurato, cosi' il
+     * chiamante puo' passarlo direttamente a {@link SSLContext#init}: nessun
+     * certificato client verra' presentato, come oggi.
+     */
+    private KeyManager[] buildKeyManagers(Environment environment) throws Exception {
+        String keystorePath = clusterService != null
+            ? clusterService.getClusterSettings().get(MonitoringExporterSettings.TLS_KEYSTORE_PATH)
+            : MonitoringExporterSettings.TLS_KEYSTORE_PATH.get(settings);
+        if (keystorePath == null || keystorePath.isBlank()) {
+            return null;
+        }
+
+        KeyStore ks = KeyStore.getInstance("JKS");
+        char[] password;
+        try (SecureString pwd = MonitoringExporterSettings.TLS_KEYSTORE_PASSWORD.get(settings);
+             InputStream fis = Files.newInputStream(
+                 environment.configDir().resolve(keystorePath))) {
+            password = pwd != null ? pwd.toString().toCharArray() : new char[0];
+            ks.load(fis, password);
+        }
+        KeyManagerFactory kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+        // Per convenzione la password della chiave privata nel keystore e' la
+        // stessa password del keystore -- non esiste un settaggio separato.
+        kmf.init(ks, password);
+        return kmf.getKeyManagers();
+    }
+
+    private SSLContext buildTrustAllContext(KeyManager[] keyManagers) throws Exception {
         SSLContext ctx = SSLContext.getInstance("TLS");
-        ctx.init(null, new TrustManager[]{new X509TrustManager() {
+        ctx.init(keyManagers, new TrustManager[]{new X509TrustManager() {
             public X509Certificate[] getAcceptedIssuers() { return new X509Certificate[0]; }
             public void checkClientTrusted(X509Certificate[] c, String a) {}
             public void checkServerTrusted(X509Certificate[] c, String a) {}
