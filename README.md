@@ -206,6 +206,32 @@ keeping the Stats-based collector as a compatibility mode.
 
 ---
 
+## Comparison with other OpenSearch monitoring approaches
+
+Using the same requirements framework as
+[opensearch-project/OpenSearch#18529](https://github.com/opensearch-project/OpenSearch/issues/18529)
+(the RFC comparing telemetry-extraction options for OpenSearch), here is where
+`opensearch-monitoring-exporter` fits relative to the four approaches it discusses.
+
+| Requirement | Aiven Prometheus Exporter (in-process) | Prometheus Elasticsearch Exporter (sidecar) | Native OTel Telemetry Framework | Performance Analyzer | **opensearch-monitoring-exporter** |
+|---|---|---|---|---|---|
+| **Export telemetry & monitor clusters effectively** | Node metrics only | Extensive metrics, external | Metrics + traces (long-term goal), needs a Collector/Data Prepper hop to land anywhere | Real-time diagnostics (RCA, PerfTop), short retention (7–60 min) | Metrics only, same Stats APIs as Aiven's plugin, written durably to a monitoring cluster |
+| **Minimal performance impact** | Runs in-process; low overhead | Runs externally; minimal impact on the OpenSearch cluster | In-process instrumentation; overhead depends on maturity | Shared-memory, designed for low overhead | In-process; batched Bulk writes with a backpressure-aware queue |
+| **Flexible export mechanisms** | Scraping endpoint only | Scraping endpoint only | OTLP-native, needs a Collector or Data Prepper | Proprietary RCA/gRPC protocol | Push via Bulk API directly to OpenSearch, no scraper/Collector/Data Prepper hop |
+| **Integration with telemetry framework / OpenSearch Dashboards** | Prometheus/Grafana-native; not directly queryable from Dashboards | Prometheus/Grafana-native; not directly queryable from Dashboards | End state UX: OTLP → Collector/Data Prepper → **ss4o** in Dashboards' Observability → Metrics UI | Its own PerfTop UI, not Dashboards | Writes **ss4o** documents directly — lands in the *same* shape Dashboards' Metrics UI expects today, without OTLP/Collector/Data Prepper |
+| **Deployment & maintenance overhead** | No extra deployment if bundled with the distribution | Requires a separate service to deploy/scale | Requires an OTel Collector or Data Prepper pipeline | Ships with OpenSearch, own storage/UI to operate | One plugin + one destination OpenSearch cluster; no extra service |
+| **API stability** | Stable Admin Client APIs (NodesStats/ClusterHealth/ClusterState/IndicesStats) | Stable REST Stats APIs | Experimental (`telemetry.feature.metrics.enabled`), can change in minor releases | Stable, purpose-built APIs | Same stable Admin Client APIs as Aiven's plugin — no coupling to the experimental telemetry framework |
+
+**Summary:** closest in architecture to the **Aiven Prometheus Exporter** (same
+stable Stats APIs, in-process, no dependency on the experimental telemetry
+framework), but *push* instead of *pull*, and it lands data in the same
+**ss4o** shape the native OTel framework is aiming for long-term — without
+requiring an OTel Collector or Data Prepper hop. Best fit: teams already
+using OpenSearch Dashboards for observability who don't want to stand up a
+parallel Prometheus/Grafana stack just for cluster monitoring.
+
+---
+
 ## License
 
 Apache 2.0 — Seacom Srl
