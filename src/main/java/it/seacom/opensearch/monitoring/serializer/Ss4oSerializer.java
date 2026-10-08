@@ -71,9 +71,13 @@ public class Ss4oSerializer {
                 docs.addAll(serializeNodeStats(ns, ts, index));
 
         if (indicesStats != null) {
-            docs.add(serializeIndicesAggregate(indicesStats, ts, index));
+            // Senza shard avviati (es. cluster appena partito, nessun indice) le
+            // CommonStats hanno tutte le sezioni a null: si salta il documento.
+            if (indicesStats.getTotal().getDocs() != null)
+                docs.add(serializeIndicesAggregate(indicesStats, ts, index));
             for (Map.Entry<String, IndexStats> e : indicesStats.getIndices().entrySet())
-                docs.add(serializePerIndex(e.getKey(), e.getValue(), health, ts, index));
+                if (e.getValue().getTotal().getDocs() != null)
+                    docs.add(serializePerIndex(e.getKey(), e.getValue(), health, ts, index));
         }
 
         if (clusterState != null)

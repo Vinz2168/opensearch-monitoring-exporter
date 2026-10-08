@@ -152,6 +152,20 @@ public class MonitoringExporterIT extends OpenSearchSingleNodeTestCase {
         assertTrue("expected per-index document for test-monitored-index", hasPerIndex);
     }
 
+    public void testSerializerSkipsIndicesDocumentsWhenNoShardsStarted() {
+        // Wildcard senza match: risposta vuota, CommonStats con sezioni null
+        IndicesStatsResponse indicesStats = client().admin().indices()
+            .stats(new IndicesStatsRequest().indices("no-such-index-*").all())
+            .actionGet();
+        assertNull(indicesStats.getTotal().getDocs());
+
+        Ss4oSerializer serializer = new Ss4oSerializer(clusterSettings());
+        List<MetricDocument> docs = serializer.serialize(
+            Instant.now(), null, null, indicesStats, null);
+
+        assertTrue(docs.isEmpty());
+    }
+
     public void testSerializerHandlesAllNullInputsGracefully() {
         Ss4oSerializer serializer = new Ss4oSerializer(clusterSettings());
         List<MetricDocument> docs = serializer.serialize(

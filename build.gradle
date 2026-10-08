@@ -16,7 +16,7 @@ import org.opensearch.gradle.test.RestIntegTestTask
 
 buildscript {
     ext {
-        opensearch_version = System.getProperty('opensearch.version', '3.7.0')
+        opensearch_version = System.getProperty('opensearch.version', '3.9.0')
     }
     repositories {
         mavenLocal()
@@ -98,6 +98,10 @@ configurations.all {
         if (details.requested.group == 'com.google.errorprone') {
             details.useVersion '2.38.0'
             details.because 'Align with OpenSearch 3.6 transitive dependency'
+        }
+        if (details.requested.group == 'org.jspecify') {
+            details.useVersion '1.0.1'
+            details.because 'Align with OpenSearch 3.9 transitive dependency'
         }
     }
 }
