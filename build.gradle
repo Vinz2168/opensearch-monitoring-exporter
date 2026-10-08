@@ -16,7 +16,7 @@ import org.opensearch.gradle.test.RestIntegTestTask
 
 buildscript {
     ext {
-        opensearch_version = System.getProperty('opensearch.version', '3.7.0')
+        opensearch_version = System.getProperty('opensearch.version', '3.8.0')
     }
     repositories {
         mavenLocal()

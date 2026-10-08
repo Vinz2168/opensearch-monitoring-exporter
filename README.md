@@ -21,7 +21,7 @@ OpenSearch cluster (monitoring)
 
 ## Prerequisites
 
-- OpenSearch 3.7.0 (experimental telemetry feature)
+- OpenSearch 3.8.0 (experimental telemetry feature)
 - Java 21+
 - No external build tool needed — the project uses the Gradle wrapper (`./gradlew`)
 
