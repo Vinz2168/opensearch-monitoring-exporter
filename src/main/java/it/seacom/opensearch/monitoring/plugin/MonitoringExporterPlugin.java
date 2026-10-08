@@ -31,6 +31,7 @@ import org.opensearch.watcher.ResourceWatcherService;
 
 import javax.net.ssl.*;
 import java.io.InputStream;
+import java.net.Socket;
 import java.net.http.HttpClient;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -304,10 +305,17 @@ public class MonitoringExporterPlugin extends Plugin {
 
     private SSLContext buildTrustAllContext(KeyManager[] keyManagers) throws Exception {
         SSLContext ctx = SSLContext.getInstance("TLS");
-        ctx.init(keyManagers, new TrustManager[]{new X509TrustManager() {
+        // X509ExtendedTrustManager e non X509TrustManager: la JDK incapsula un
+        // X509TrustManager semplice in un wrapper che verifica comunque
+        // l'hostname (HttpClient imposta endpointIdentificationAlgorithm=HTTPS).
+        ctx.init(keyManagers, new TrustManager[]{new X509ExtendedTrustManager() {
             public X509Certificate[] getAcceptedIssuers() { return new X509Certificate[0]; }
             public void checkClientTrusted(X509Certificate[] c, String a) {}
             public void checkServerTrusted(X509Certificate[] c, String a) {}
+            public void checkClientTrusted(X509Certificate[] c, String a, Socket s) {}
+            public void checkServerTrusted(X509Certificate[] c, String a, Socket s) {}
+            public void checkClientTrusted(X509Certificate[] c, String a, SSLEngine e) {}
+            public void checkServerTrusted(X509Certificate[] c, String a, SSLEngine e) {}
         }}, new SecureRandom());
         return ctx;
     }
